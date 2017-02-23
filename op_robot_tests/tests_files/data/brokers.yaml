@@ -136,7 +136,7 @@ Newtend:
 PrivatMarket:
     intervals:
         default:
-            enquiry: [0, 15]
+            enquiry: [0, 22]
             tender:  [0, 25]
     keywords_file: privatmarket
     roles:
