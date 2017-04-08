@@ -10,7 +10,7 @@
 # WARRANTIES OF TITLE, MERCHANTABILITY, AGAINST INFRINGEMENT, AND FITNESS
 # FOR A PARTICULAR PURPOSE.
 #
-##############################################################################
+#############################################################################
 """Bootstrap a buildout-based project
 
 Simply run this script in a directory containing a buildout.cfg.
