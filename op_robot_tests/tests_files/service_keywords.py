@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -
+import operator
+from .local_time import get_now, TZ
 from copy import deepcopy
 from datetime import timedelta
 from dateutil.parser import parse
 from dpath.util import new as xpathnew
-from iso8601 import parse_date
-from json import load
+from haversine import haversine
+from json import load, loads
 from jsonpath_rw import parse as parse_path
-from munch import fromYAML, Munch, munchify
-from restkit import request
+from munch import Munch, munchify
 from robot.errors import ExecutionFailed
 from robot.libraries.BuiltIn import BuiltIn
 from robot.output import LOGGER
@@ -18,41 +19,37 @@ from robot.output.loggerhelper import Message
 from .initial_data import (
     create_fake_doc,
     create_fake_sentence,
-    test_award_data,
+    fake,
+    field_with_id,
     test_bid_data,
-    test_cancel_claim_data,
-    test_cancel_tender_data,
-    test_change_cancellation_document_field_data,
+    test_bid_value,
     test_claim_answer_data,
-    test_claim_answer_satisfying_data,
     test_claim_data,
-    test_complaint_answer_data,
     test_complaint_data,
     test_complaint_reply_data,
     test_confirm_data,
-    test_escalate_claim_data,
+    test_feature_data,
     test_invalid_features_data,
     test_item_data,
-    test_lot_complaint_data,
     test_lot_data,
     test_lot_document_data,
-    test_lot_question_data,
+    test_related_question,
     test_question_answer_data,
     test_question_data,
-    test_submit_claim_data,
     test_supplier_data,
     test_tender_data,
+    test_tender_data_competitive_dialogue,
     test_tender_data_limited,
-    test_tender_data_meat,
-    test_tender_data_multiple_items,
-    test_tender_data_multiple_lots,
     test_tender_data_openeu,
-    test_tender_data_openua
+    test_tender_data_openua,
 )
-from .local_time import get_now, TZ
-import os
 from barbecue import chef
+from restkit import request
+# End of non-pointless imports
+import os
 import re
+
+NUM_TYPES = (int, long, float)
 
 
 def get_current_tzdate():
@@ -63,25 +60,20 @@ def add_minutes_to_date(date, minutes):
     return (parse(date) + timedelta(minutes=float(minutes))).isoformat()
 
 
-def get_file_contents(path):
-    with open(path, 'r') as f:
-        return unicode(f.read()) or u''
-
-
-def compare_date(date1, date2, accuracy="minute", absolute_delta=True):
+def compare_date(left, right, accuracy="minute", absolute_delta=True):
     '''Compares dates with specified accuracy
 
     Before comparison dates are parsed into datetime.datetime format
     and localized.
 
-    :param date1:           First date
-    :param date2:           Second date
+    :param left:            First date
+    :param right:           Second date
     :param accuracy:        Max difference between dates to consider them equal
                             Default value   - "minute"
                             Possible values - "day", "hour", "minute" or float value
                             of seconds
     :param absolute_delta:  Type of comparison. If set to True, then no matter which date order. If set to
-                            False then date2 must be lower then date1 for accuracy value.
+                            False then right must be lower then left for accuracy value.
                             Default value   - True
                             Possible values - True and False or something what can be casted into them
     :returns:               Boolean value
@@ -91,15 +83,15 @@ def compare_date(date1, date2, accuracy="minute", absolute_delta=True):
                             given and accuracy will be set to 60.
 
     '''
-    date1 = parse(date1)
-    date2 = parse(date2)
+    left = parse(left)
+    right = parse(right)
 
-    if date1.tzinfo is None:
-        date1 = TZ.localize(date1)
-    if date2.tzinfo is None:
-        date2 = TZ.localize(date2)
+    if left.tzinfo is None:
+        left = TZ.localize(left)
+    if right.tzinfo is None:
+        right = TZ.localize(right)
 
-    delta = (date1 - date2).total_seconds()
+    delta = (left - right).total_seconds()
 
     if accuracy == "day":
         accuracy = 24 * 60 * 60 - 1
@@ -120,7 +112,35 @@ def compare_date(date1, date2, accuracy="minute", absolute_delta=True):
     return True
 
 
-def log_object_data(data, file_name=None, format="yaml", update=False):
+def compare_coordinates(left_lat, left_lon, right_lat, right_lon, accuracy=0.1):
+    '''Compares coordinates with specified accuracy
+
+    :param left_lat:        First coordinate latitude
+    :param left_lon:        First coordinate longitude
+    :param right_lat:       Second coordinate latitude
+    :param right_lon:       Second coordinate longitude
+    :param accuracy:        Max difference between coordinates to consider them equal
+                            Default value   - 0.1
+                            Possible values - float or integer value of kilometers
+
+    :returns:               Boolean value
+
+    :error:                 ValueError when there is problem with converting accuracy
+                            into float value. When it will be catched warning will be
+                            given and accuracy will be set to 0.1.
+    '''
+    for key, value in {'left_lat': left_lat, 'left_lon': left_lon, 'right_lat': right_lat, 'right_lon': right_lon}.iteritems():
+        if not isinstance(value, NUM_TYPES):
+            raise TypeError("Invalid type for coordinate '{0}'. "
+                            "Expected one of {1}, got {2}".format(
+                                key, str(NUM_TYPES), str(type(value))))
+    distance = haversine((left_lat, left_lon), (right_lat, right_lon))
+    if distance > accuracy:
+        return False
+    return True
+
+
+def log_object_data(data, file_name=None, format="yaml", update=False, artifact=False):
     """Log object data in pretty format (JSON or YAML)
 
     Two output formats are supported: "yaml" and "json".
@@ -141,8 +161,11 @@ def log_object_data(data, file_name=None, format="yaml", update=False):
     if not isinstance(data, Munch):
         data = munchify(data)
     if file_name:
-        output_dir = BuiltIn().get_variable_value("${OUTPUT_DIR}")
-        file_path = os.path.join(output_dir, file_name + '.' + format)
+        if artifact:
+            file_path = os.path.join(os.path.dirname(__file__), 'data', file_name + '.' + format)
+        else:
+            output_dir = BuiltIn().get_variable_value("${OUTPUT_DIR}")
+            file_path = os.path.join(output_dir, file_name + '.' + format)
         if update:
             try:
                 with open(file_path, "r+") as file_obj:
@@ -176,22 +199,38 @@ def munch_to_object(data, format="yaml"):
         return data.toYAML(allow_unicode=True, default_flow_style=False)
 
 
-def load_data_from(file_name, mode=None):
+def load_data_from(file_name, mode=None, external_params_name=None):
+    """We assume that 'external_params' is a a valid json if passed
+    """
+
+    external_params = BuiltIn().\
+        get_variable_value('${{{name}}}'.format(name=external_params_name))
+
     if not os.path.exists(file_name):
         file_name = os.path.join(os.path.dirname(__file__), 'data', file_name)
     with open(file_name) as file_obj:
-        if file_name.endswith(".json"):
+        if file_name.endswith('.json'):
             file_data = Munch.fromDict(load(file_obj))
-        elif file_name.endswith(".yaml"):
-            file_data = fromYAML(file_obj)
-    if mode == "brokers":
+        elif file_name.endswith('.yaml'):
+            file_data = Munch.fromYAML(file_obj)
+    if mode == 'brokers':
         default = file_data.pop('Default')
         brokers = {}
         for k, v in file_data.iteritems():
             brokers[k] = merge_dicts(default, v)
-        return brokers
-    else:
-        return file_data
+        file_data = brokers
+
+    try:
+        ext_params_munch \
+            = Munch.fromDict(loads(external_params)) \
+            if external_params else Munch()
+    except ValueError:
+        raise ValueError(
+            'Value {param} of command line parameter {name} is invalid'.
+            format(name=external_params_name, param=str(external_params))
+        )
+
+    return merge_dicts(file_data, ext_params_munch)
 
 
 def compute_intrs(brokers_data, used_brokers):
@@ -201,26 +240,28 @@ def compute_intrs(brokers_data, used_brokers):
     does not contain ``Default`` entry.
     Using `load_data_from` with ``mode='brokers'`` is recommended.
     """
-    num_types = (int, long, float)
+    keys_to_prefer_lesser = ('accelerator',)
 
-    def recur(l, r):
+    def recur(l, r, prefer_greater_numbers=True):
         l, r = deepcopy(l), deepcopy(r)
         if isinstance(l, list) and isinstance(r, list) and len(l) == len(r):
             lst = []
             for ll, rr in zip(l, r):
                 lst.append(recur(ll, rr))
             return lst
-        elif isinstance(l, num_types) and isinstance(r, num_types):
+        elif isinstance(l, NUM_TYPES) and isinstance(r, NUM_TYPES):
             if l == r:
                 return l
             if l > r:
-                return l
+                return l if prefer_greater_numbers else r
             if l < r:
-                return r
+                return r if prefer_greater_numbers else l
         elif isinstance(l, dict) and isinstance(r, dict):
             for k, v in r.iteritems():
                 if k not in l.keys():
                     l[k] = v
+                elif k in keys_to_prefer_lesser:
+                   l[k] = recur(l[k], v, prefer_greater_numbers=False)
                 else:
                     l[k] = recur(l[k], v)
             return l
@@ -237,43 +278,45 @@ def compute_intrs(brokers_data, used_brokers):
     return result
 
 
-def prepare_test_tender_data(procedure_intervals, mode):
+def prepare_test_tender_data(procedure_intervals,
+                             tender_parameters,
+                             submissionMethodDetails):
     # Get actual intervals by mode name
+    mode = tender_parameters['mode']
     if mode in procedure_intervals:
         intervals = procedure_intervals[mode]
     else:
         intervals = procedure_intervals['default']
     LOGGER.log_message(Message(intervals))
+    tender_parameters['intervals'] = intervals
 
     # Set acceleration value for certain modes
-    if mode in ['openua', 'openeu']:
-        assert isinstance(intervals['accelerator'], int), \
-            "Accelerator should be an 'int', " \
-            "not '{}'".format(type(intervals['accelerator']).__name__)
-        assert intervals['accelerator'] >= 0, \
-            "Accelerator should not be less than 0"
-    else:
-        assert 'accelerator' not in intervals.keys(), \
-               "Accelerator is not available for mode '{0}'".format(mode)
-
-    if mode == 'meat':
-        return munchify({'data': test_tender_data_meat(intervals)})
-    elif mode == 'multiItem':
-        return munchify({'data': test_tender_data_multiple_items(intervals)})
-    elif mode == 'multiLot':
-        return munchify({'data': test_tender_data_multiple_lots(intervals)})
-    elif mode == 'negotiation':
-        return munchify({'data': test_tender_data_limited(intervals, 'negotiation')})
+    assert isinstance(intervals['accelerator'], int), \
+        "Accelerator should be an 'int', " \
+        "not '{}'".format(type(intervals['accelerator']).__name__)
+    assert intervals['accelerator'] >= 0, \
+        "Accelerator should not be less than 0"
+    if mode == 'negotiation':
+        return munchify({'data': test_tender_data_limited(tender_parameters)})
     elif mode == 'negotiation.quick':
-        return munchify({'data': test_tender_data_limited(intervals, 'negotiation.quick')})
+        return munchify({'data': test_tender_data_limited(tender_parameters)})
     elif mode == 'openeu':
-        return munchify({'data': test_tender_data_openeu(intervals)})
+        return munchify({'data': test_tender_data_openeu(
+            tender_parameters, submissionMethodDetails)})
     elif mode == 'openua':
-        return munchify({'data': test_tender_data_openua(intervals)})
+        return munchify({'data': test_tender_data_openua(
+            tender_parameters, submissionMethodDetails)})
+    elif mode == 'open_competitive_dialogue':
+        return munchify({'data': test_tender_data_competitive_dialogue(
+            tender_parameters, submissionMethodDetails)})
     elif mode == 'reporting':
-        return munchify({'data': test_tender_data_limited(intervals, 'reporting')})
-    elif mode == 'single':
-        return munchify({'data': test_tender_data(intervals)})
+        return munchify({'data': test_tender_data_limited(tender_parameters)})
+    elif mode == 'belowThreshold':
+        return munchify({'data': test_tender_data(
+            tender_parameters,
+            submissionMethodDetails=submissionMethodDetails)})
+        # The previous line needs an explicit keyword argument because,
+        # unlike previous functions, this one has three arguments.
     raise ValueError("Invalid mode for prepare_test_tender_data")
 
 
@@ -301,11 +344,6 @@ def set_access_key(tender, access_token):
     return tender
 
 
-def set_to_object(obj, attribute, value):
-    xpathnew(obj, attribute, value, separator='.')
-    return obj
-
-
 def get_from_object(obj, attribute):
     """Gets data from a dictionary using a dotted accessor-string"""
     jsonpath_expr = parse_path(attribute)
@@ -314,6 +352,31 @@ def get_from_object(obj, attribute):
         return return_list[0]
     else:
         raise AttributeError('Attribute not found: {0}'.format(attribute))
+
+
+def set_to_object(obj, attribute, value):
+    # Search the list index in path to value
+    list_index = re.search('\d+', attribute)
+    if list_index and attribute != 'stage2TenderID':
+        list_index = list_index.group(0)
+        parent, child = attribute.split('[' + list_index + '].')[:2]
+        # Split attribute to path to lits (parent) and path to value in list element (child)
+        try:
+            # Get list from parent
+            listing = get_from_object(obj, parent)
+            # Create object with list_index if he don`t exist
+            if len(listing) < int(list_index) + 1:
+                listing.append({})
+        except AttributeError:
+            # Create list if he don`t exist
+            listing = [{}]
+        # Update list in parent
+        xpathnew(obj, parent, listing, separator='.')
+        # Set value in obj
+        xpathnew(obj, '.'.join([parent, list_index,  child]), value, separator='.')
+    else:
+        xpathnew(obj, attribute, value, separator='.')
+    return munchify(obj)
 
 
 def wait_to_date(date_stamp):
@@ -375,9 +438,24 @@ def get_id_from_object(obj):
     return obj_id.group(1)
 
 
+def get_id_from_string(string):
+    return re.match(r'[dc]\-[0-9a-fA-F]{8}', string).group(0)
+
+
 def get_object_type_by_id(object_id):
     prefixes = {'q': 'questions', 'f': 'features', 'i': 'items', 'l': 'lots'}
     return prefixes.get(object_id[0])
+
+
+def get_complaint_index_by_complaintID(data, complaintID):
+    if not data:
+        return 0
+    for index, element in enumerate(data):
+        if element['complaintID'] == complaintID:
+            break
+    else:
+        index += 1
+    return index
 
 
 def get_object_index_by_id(data, object_id):
@@ -391,27 +469,83 @@ def get_object_index_by_id(data, object_id):
         index += 1
     return index
 
-# GUI Frontends common
-def add_data_for_gui_frontends(tender_data):
-    now = get_now()
-    # tender_data.data.enquiryPeriod['startDate'] = (now + timedelta(minutes=2)).isoformat()
-    tender_data.data.enquiryPeriod['endDate'] = (now + timedelta(minutes=6)).isoformat()
-    tender_data.data.tenderPeriod['startDate'] = (now + timedelta(minutes=7)).isoformat()
-    tender_data.data.tenderPeriod['endDate'] = (now + timedelta(minutes=11)).isoformat()
-    return tender_data
+
+def get_object_by_id(data, given_object_id, slice_element, object_id):
+    """
+        data: object to slice
+        given_object_id: with what id we should compare
+        slice_element: what path should be extracted (e.g. from { key: val } extract key )
+        object_id: what property is id (e.g. from { id: 1, name: 2 } extract id)
+    """
+
+    # Slice the given object, e.g. slice bid object to lotValues object
+    try:
+        sliced_object = data[slice_element]
+    except KeyError:
+        return data
+
+    # If there is one sliced object, get the 1st element
+    if len(sliced_object) == 1:
+        return sliced_object[0]
+
+    # Compare given object id and id from sliced object
+    for index, element in enumerate(sliced_object):
+        element_id = element[object_id]
+        if element_id == given_object_id:
+            return element
+
+    return sliced_object[0]
 
 
-def convert_date_to_slash_format(isodate):
-    iso_dt = parse_date(isodate)
-    date_string = iso_dt.strftime("%d/%m/%Y")
-    return date_string
+def generate_test_bid_data(tender_data):
+    bid = test_bid_data()
+    if tender_data.get('procurementMethodType', '')[:-2] in ('aboveThreshold', 'competitiveDialogue'):
+        bid.data.selfEligible = True
+        bid.data.selfQualified = True
+    if 'lots' in tender_data:
+        bid.data.lotValues = []
+        for lot in tender_data['lots']:
+            value = test_bid_value(lot['value']['amount'])
+            value['relatedLot'] = lot.get('id', '')
+            bid.data.lotValues.append(value)
+    else:
+        bid.data.update(test_bid_value(tender_data['value']['amount']))
+    if 'features' in tender_data:
+        bid.data.parameters = []
+        for feature in tender_data['features']:
+            parameter = {"value": fake.random_element(elements=(0.05, 0.01, 0)), "code": feature.get('code', '')}
+            bid.data.parameters.append(parameter)
+    return bid
 
 
-def convert_datetime_to_dot_format(isodate):
-    iso_dt = parse_date(isodate)
-    day_string = iso_dt.strftime("%d.%m.%Y %H:%M")
-    return day_string
+def mult_and_round(*args, **kwargs):
+    return round(reduce(operator.mul, args), kwargs.get('precision', 2))
 
 
-def local_path_to_file(file_name):
-    return os.path.join(os.path.dirname(__file__), 'documents', file_name)
+def generate_test_bid_data_second_stage(tender_data, index='0'):
+    bid = test_bid_data()
+    if index.isdigit():
+        index = int(index)
+    else:
+        index = 0
+    bid['data']['tenderers'][0]['identifier']['id'] = tender_data['shortlistedFirms'][index]['identifier']['id']
+    bid['data']['tenderers'][0]['identifier']['scheme'] = tender_data['shortlistedFirms'][index]['identifier']['scheme']
+    bid['data']['tenderers'][0]['identifier']['legalName'] = tender_data['shortlistedFirms'][index]['identifier']['legalName']
+
+    if tender_data.get('procurementMethodType', '')[:-2] in ('aboveThreshold', 'competitiveDialogue'):
+        bid.data.selfEligible = True
+        bid.data.selfQualified = True
+    if 'lots' in tender_data:
+        bid.data.lotValues = []
+        for lot in tender_data['lots']:
+            value = test_bid_value(lot['value']['amount'])
+            value['relatedLot'] = lot.get('id', '')
+            bid.data.lotValues.append(value)
+    else:
+        bid.data.update(test_bid_value(tender_data['value']['amount']))
+    if 'features' in tender_data:
+        bid.data.parameters = []
+        for feature in tender_data['features']:
+            parameter = {"value": fake.random_element(elements=(0.05, 0.01, 0)), "code": feature.get('code', '')}
+            bid.data.parameters.append(parameter)
+    return bid

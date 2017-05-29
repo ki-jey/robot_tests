@@ -35,7 +35,7 @@ Set Suite Variable With Default Value
 
 
 Порівняти системний і серверний час
-  ${server_time}=  request  ${api_host_url}  HEAD
+  ${server_time}=  request  ${API_HOST_URL}  HEAD
   ${local_time}=  Get current TZdate
   Log  ${server_time.headers['date']}
   Log  ${local_time}
@@ -54,20 +54,22 @@ Set Suite Variable With Default Value
   Log  ${commit}
   Log  ${repo}
   Log  ${branch}
+  Log  ${status}
   Log  ${diff}
   Log  ${reflog}
 
 
 Завантажуємо дані про користувачів і майданчики
-  Log  ${broker}
-  Log  ${role}
+  Log  ${BROKER}
+  Log  ${ROLE}
   # Suite variable; should be present in every test suite
   # in `*** Variables ***` section
-  Log Many  @{used_roles}
+  Log Many  @{USED_ROLES}
 
   # Load brokers data
   ${file_path}=  Get Variable Value  ${BROKERS_FILE}  brokers.yaml
-  ${BROKERS}=  load_data_from  ${file_path}  mode=brokers
+  ${BROKERS_PARAMS}=  Get Variable Value  ${BROKERS_PARAMS}
+  ${BROKERS}=  load_data_from  ${file_path}  mode=brokers  external_params_name=BROKERS_PARAMS
   Log  ${BROKERS}
   Set Suite Variable  ${BROKERS}
   # List of currently used brokers
@@ -75,33 +77,34 @@ Set Suite Variable With Default Value
 
   # Load users data
   ${file_path}=  Get Variable Value  ${USERS_FILE}  users.yaml
-  ${USERS}=  load_data_from  ${file_path}
+  ${USERS_PARAMS}=  Get Variable Value  ${USERS_PARAMS}
+  ${USERS}=  load_data_from  ${file_path}  users.yaml  external_params_name=USERS_PARAMS
   Log  ${USERS.users}
   Set Suite Variable  ${USERS}
   # List of currently used users
   ${used_users}=  Create List
 
   # Handle `-v role:something`
-  Run Keyword Unless  '${role}' in @{used_roles}
+  Run Keyword Unless  '${ROLE}' in @{USED_ROLES}
   ...      Log
-  ...      Role ${role} is not used in this test suite.
+  ...      Role ${ROLE} is not used in this test suite.
   ...      WARN
   Set Suite Variable With Default Value
-  ...      ${role}
-  ...      ${BROKERS['${broker}'].roles.${role}}
+  ...      ${ROLE}
+  ...      ${BROKERS['${BROKER}'].roles.${ROLE}}
 
   # Set default value for each role if it is not set yet;
   # fill `used_users`;
   # fill `used_brokers`.
   #
   # Don't even ask how this works!
-  :FOR  ${tmp_role}  IN  @{used_roles}
+  :FOR  ${tmp_role}  IN  @{USED_ROLES}
   \  Set Suite Variable With Default Value
   \  ...      ${tmp_role}
   \  ...      ${BROKERS['Quinta'].roles.${tmp_role}}
   \  Append To List  ${used_users}  ${${tmp_role}}
   \  Append To List  ${used_brokers}  ${USERS.users.${${tmp_role}}.broker}
-  # Since `@{used_roles}` is already a suite variable,
+  # Since `@{USED_ROLES}` is already a suite variable,
   # let's make `@{used_brokers}` alike.
   ${used_brokers}=  Remove Duplicates  ${used_brokers}
   Set Suite Variable  ${used_brokers}
@@ -160,118 +163,167 @@ Get Broker Property By Username
 
 Створити артефакт
   ${artifact}=  Create Dictionary
-  ...      api_version=${api_version}
+  ...      api_version=${API_VERSION}
   ...      tender_uaid=${TENDER['TENDER_UAID']}
   ...      last_modification_date=${TENDER['LAST_MODIFICATION_DATE']}
-  ...      mode=${mode}
+  ...      mode=${MODE}
   Run Keyword And Ignore Error  Set To Dictionary  ${artifact}
   ...          tender_owner=${USERS.users['${tender_owner}'].broker}
   ...          access_token=${USERS.users['${tender_owner}'].access_token}
   ...          tender_id=${USERS.users['${tender_owner}'].tender_data.data.id}
+  Run Keyword And Ignore Error  Set To Dictionary  ${artifact}  tender_owner_access_token=${USERS.users['${tender_owner}'].access_token}
+  Run Keyword And Ignore Error  Set To Dictionary  ${artifact}  provider_access_token=${USERS.users['${provider}'].access_token}
+  Run Keyword And Ignore Error  Set To Dictionary  ${artifact}  provider1_access_token=${USERS.users['${provider1}'].access_token}
   ${status}  ${lots_ids}=  Run Keyword And Ignore Error  Отримати ідентифікатори об’єктів  ${viewer}  lots
-  Run Keyword If  ${status}'=='PASS'
+  Run Keyword If  '${status}'=='PASS'
   ...      Set To Dictionary   ${artifact}   lots=${lots_ids}
   Log   ${artifact}
-  log_object_data  ${artifact}  artifact  update=${True}
+  log_object_data  ${artifact}  file_name=artifact  update=${True}  artifact=${True}
 
 
 Завантажити дані про тендер
   ${file_path}=  Get Variable Value  ${ARTIFACT_FILE}  artifact.yaml
   ${ARTIFACT}=  load_data_from  ${file_path}
   Run Keyword And Ignore Error  Set To Dictionary  ${USERS.users['${tender_owner}']}  access_token=${ARTIFACT.access_token}
-  ${TENDER}=  Create Dictionary   TENDER_UAID=${ARTIFACT.tender_uaid}   LAST_MODIFICATION_DATE=${ARTIFACT.last_modification_date}   LOT_ID=${Empty}
+  ${TENDER}=  Create Dictionary
+  ...      TENDER_UAID=${ARTIFACT.tender_uaid}
+  ...      LAST_MODIFICATION_DATE=${ARTIFACT.last_modification_date}
+  ...      LOT_ID=${Empty}
   ${lot_index}=  Get Variable Value  ${lot_index}  0
   Run Keyword And Ignore Error  Set To Dictionary  ${TENDER}  LOT_ID=${ARTIFACT.lots[${lot_index}]}
-  ${mode}=  Get Variable Value  ${mode}  ${ARTIFACT.mode}
-  Set Suite Variable  ${mode}
+  ${MODE}=  Get Variable Value  ${MODE}  ${ARTIFACT.mode}
+  Run Keyword And Ignore Error  Set To Dictionary  ${USERS.users['${tender_owner}']}  access_token=${ARTIFACT.tender_owner_access_token}
+  Run Keyword And Ignore Error  Set To Dictionary  ${USERS.users['${provider}']}  access_token=${ARTIFACT.provider_access_token}
+  Run Keyword And Ignore Error  Set To Dictionary  ${USERS.users['${provider1}']}  access_token=${ARTIFACT.provider1_access_token}
+  Set Suite Variable  ${MODE}
   Set Suite Variable  ${lot_index}
   Set Suite Variable  ${TENDER}
-  log_object_data  ${ARTIFACT}  artifact
+  log_object_data  ${ARTIFACT}  file_name=artifact  update=${True}  artifact=${True}
 
 
-Підготовка даних для створення тендера
+Підготувати дані для створення тендера
+  [Arguments]  ${tender_parameters}
   ${period_intervals}=  compute_intrs  ${BROKERS}  ${used_brokers}
-  ${tender_data}=  prepare_test_tender_data  ${period_intervals}  ${mode}
+  ${submissionMethodDetails}=  Get Variable Value  ${submissionMethodDetails}
+  ${tender_data}=  prepare_test_tender_data  ${period_intervals}  ${tender_parameters}  ${submissionMethodDetails}
   ${TENDER}=  Create Dictionary
   Set Global Variable  ${TENDER}
-  Log  ${TENDER}
   Log  ${tender_data}
   [return]  ${tender_data}
 
 
-Підготовка даних для створення предмету закупівлі
-  ${item}=  test_item_data
+Підготувати дані для створення предмету закупівлі
+  [Arguments]  ${cpv}
+  ${item}=  test_item_data  ${cpv[0:4]}
   [Return]  ${item}
 
 
-Підготовка даних для створення лоту
-  ${lot}=  test_lot_data
+Підготувати дані для створення лоту
+  [Arguments]  ${max_lot_value_amount}
+  ${lot}=  test_lot_data  ${max_lot_value_amount}
   ${reply}=  Create Dictionary  data=${lot}
   [Return]  ${reply}
 
+Підготувати дані для створення нецінового показника
+  ${reply}=  test_feature_data
+  [Return]  ${reply}
 
-Підготовка даних для подання вимоги
+Підготувати дані для подання вимоги
   ${claim}=  test_claim_data
   [Return]  ${claim}
 
 
-Підготовка даних для подання скарги
+Підготувати дані для подання скарги
   [Arguments]  ${lot}=${False}
   ${complaint}=  test_complaint_data  ${lot}
   [Return]  ${complaint}
 
 
-Підготовка даних для відповіді на скаргу
+Підготувати дані для відповіді на скаргу
   ${reply}=  test_complaint_reply_data
   [Return]  ${reply}
 
 
-Підготовка даних для запитання
+Підготувати дані для запитання
   ${question}=  test_question_data
   [Return]  ${question}
 
 
-Підготовка даних для відповіді на запитання
+Підготувати дані для відповіді на запитання
   ${answer}=  test_question_answer_data
   [Return]  ${answer}
 
 
 Підготувати дані для подання пропозиції
-  ${supplier_data}=  test_bid_data  ${mode}
-  [Return]  ${supplier_data}
+  [Arguments]
+  ${bid}=  generate_test_bid_data  ${USERS.users['${tender_owner}'].initial_data.data}
+  [Return]  ${bid}
+
+
+Підготувати дані для подання пропозиції для другого етапу
+  [Arguments]  ${index}=0
+  ${bid}=  generate_test_bid_data_second_stage  ${USERS.users['${tender_owner}'].initialdata.data}  ${index}
+  [Return]  ${bid}
 
 
 Підготувати дані про постачальника
-  [Arguments]  ${username}
+  [Arguments]  ${username}  ${lotIndex}=${-1}
+  ${lotIndex}=  Convert To Integer  ${lotIndex}
   ${supplier_data}=  test_supplier_data
-  Set To Dictionary  ${USERS.users['${username}']}  supplier_data=${supplier_data}
+  Run Keyword If  ${lotIndex} > -1  Set To Dictionary  ${supplier_data.data}  lotID=${USERS.users['${tender_owner}'].initial_data.data['lots'][${lotIndex}]['id']}
+  Set To Dictionary  ${USERS.users['${tender_owner}']}  supplier_data=${supplier_data}
   Log  ${supplier_data}
   [Return]  ${supplier_data}
 
 
 Підготувати дані про скасування
-  [Arguments]  ${username}
   ${cancellation_reason}=  create_fake_sentence
-  ${document}=  create_fake_doc
+  ${cancellation_reason}=  field_with_id  c  ${cancellation_reason}
+  ${cancellation_id}=  get_id_from_string  ${cancellation_reason}
+  ${file_path}  ${file_name}  ${file_content}=  create_fake_doc
+  ${doc_id}=  get_id_from_string  ${file_name}
+  ${document}=  Create Dictionary
+  ...      doc_path=${file_path}
+  ...      doc_name=${file_name}
+  ...      doc_content=${file_content}
+  ...      doc_id=${doc_id}
   ${new_description}=  create_fake_sentence
-  ${cancellation_data}=  Create Dictionary  cancellation_reason=${cancellation_reason}  document=${document}  description=${new_description}
-  Set To Dictionary  ${USERS.users['${username}']}  cancellation_data=${cancellation_data}
+  ${cancellation_data}=  Create Dictionary
+  ...      cancellation_reason=${cancellation_reason}
+  ...      cancellation_id=${cancellation_id}
+  ...      document=${document}
+  ...      description=${new_description}
+  ${cancellation_data}=  munchify  ${cancellation_data}
   [Return]  ${cancellation_data}
 
 
 Адаптувати дані для оголошення тендера
-  [Arguments]  ${username}  ${tender_data}
+  [Arguments]  ${tender_data}
   # munchify is used to make deep copy of ${tender_data}
-  ${tender_data_copy}=  munchify  ${tender_data}
-  ${status}  ${adapted_data}=  Run Keyword And Ignore Error  Викликати для учасника  ${username}  Підготувати дані для оголошення тендера  ${tender_data_copy}
-  ${adapted_data}=  Set variable if  '${status}' == 'FAIL'  ${tender_data_copy}  ${adapted_data}
-  # munchify is used to make nice log output
-  ${adapted_data}=  munchify  ${adapted_data}
-  Log  ${tender_data}
+  ${adapted_data}=  munchify  ${tender_data}
+  :FOR  ${username}  IN  @{USED_ROLES}
+  # munchify is used to make deep copy of ${adapted_data}
+  \  ${adapted_data_copy}=  munchify  ${adapted_data}
+  \  ${status}  ${adapted_data_from_broker}=  Run keyword and ignore error  Run As  ${${username}}  Підготувати дані для оголошення тендера  ${adapted_data_copy}  ${username}
+  \  Log  ${adapted_data_from_broker}
+  # Need this in case ``${${username}}`` doesn't have `Підготувати дані для оголошення
+  # тендера користувачем` keyword, so after `Run keyword and ignore error` call
+  # ``${adapted_data_from_broker}`` will be ``${None}``. Else - nothing changes.
+  \  ${adapted_data_from_broker}=  Set variable if  '${status}' == 'FAIL'  ${adapted_data}  ${adapted_data_from_broker}
+  \  Log differences between dicts  ${adapted_data.data}  ${adapted_data_from_broker.data}  ${username} has changed initial data!
+  # Update (or not, if nothing changed) ``${adapted_data}``.
+  \  ${adapted_data}=  munchify  ${adapted_data_from_broker}
+  \  Log  ${adapted_data}
   Log  ${adapted_data}
-  ${status}=  Run keyword and return status  Dictionaries Should Be Equal  ${adapted_data.data}  ${tender_data.data}
-  Run keyword if  ${status} == ${False}  Log  Initial tender data was changed  WARN
+  Log  ${tender_data}
   [Return]  ${adapted_data}
+
+
+Log differences between dicts
+  [Arguments]  ${left}  ${right}  ${begin}  ${end}=${Empty}
+  ${diff_status}  ${diff_message}=  Run Keyword And Ignore Error  Dictionaries Should Be Equal  ${left}  ${right}
+  Run keyword if  '${diff_status}' == 'FAIL'  Log  \n${begin}\n${diff_message}\n${end}  WARN
+  [Return]  ${diff_status}
 
 
 Завантажуємо бібліотеку з реалізацією для майданчика ${keywords_file}
@@ -353,20 +405,20 @@ Get Broker Property By Username
   ...      ${USERS.users['${username}']['LAST_REFRESH_DATE']}
   ${LAST_REFRESH_DATE}=  Get Current TZdate
   Run Keyword If  ${time_diff} > 0  Run keywords
-  ...      Викликати для учасника  ${username}  Оновити сторінку з тендером  ${TENDER['TENDER_UAID']}
+  ...      Run As  ${username}  Оновити сторінку з тендером  ${TENDER['TENDER_UAID']}
   ...      AND
   ...      Set To Dictionary  ${USERS.users['${username}']}  LAST_REFRESH_DATE=${LAST_REFRESH_DATE}
 
 
 Звірити поле тендера
-  [Arguments]  ${username}  ${tender_data}  ${field}
-  ${left}=  Get_From_Object  ${tender_data.data}  ${field}
-  Звірити поле тендера із значенням  ${username}  ${left}  ${field}
+  [Arguments]  ${username}  ${tender_uaid}  ${tender_data}  ${field}
+  ${left}=  get_from_object  ${tender_data.data}  ${field}
+  Звірити поле тендера із значенням  ${username}  ${tender_uaid}  ${left}  ${field}
 
 
 Звірити поле тендера із значенням
-  [Arguments]  ${username}  ${left}  ${field}  ${object_id}=${None}
-  ${right}=  Отримати дані із тендера  ${username}  ${field}  ${object_id}
+  [Arguments]  ${username}  ${tender_uaid}  ${left}  ${field}  ${object_id}=${Empty}
+  ${right}=  Отримати дані із тендера  ${username}  ${tender_uaid}  ${field}  ${object_id}
   Порівняти об'єкти  ${left}  ${right}
 
 
@@ -380,14 +432,14 @@ Get Broker Property By Username
 
 
 Звірити дату тендера
-  [Arguments]  ${username}  ${tender_data}  ${field}  ${accuracy}=60  ${absolute_delta}=${False}
-  ${left}=  Get_From_Object  ${tender_data.data}  ${field}
-  Звірити дату тендера із значенням  ${username}  ${left}  ${field}  accuracy=${accuracy}  absolute_delta=${absolute_delta}
+  [Arguments]  ${username}  ${tender_uaid}  ${tender_data}  ${field}  ${accuracy}=60  ${absolute_delta}=${False}
+  ${left}=  get_from_object  ${tender_data.data}  ${field}
+  Звірити дату тендера із значенням  ${username}  ${tender_uaid}  ${left}  ${field}  accuracy=${accuracy}  absolute_delta=${absolute_delta}
 
 
 Звірити дату тендера із значенням
-  [Arguments]  ${username}  ${left}  ${field}  ${object_id}=${None}  ${accuracy}=60  ${absolute_delta}=${False}
-  ${right}=  Отримати дані із тендера  ${username}  ${field}  ${object_id}
+  [Arguments]  ${username}  ${tender_uaid}  ${left}  ${field}  ${object_id}=${Empty}  ${accuracy}=60  ${absolute_delta}=${False}
+  ${right}=  Отримати дані із тендера  ${username}  ${tender_uaid}  ${field}  ${object_id}
   Порівняти дати  ${left}  ${right}  accuracy=${accuracy}  absolute_delta=${absolute_delta}
 
 
@@ -399,71 +451,107 @@ Get Broker Property By Username
   ...      The keyword will fail if the difference between
   ...      ``left`` and ``right`` dates is more than ``accuracy``,
   ...      otherwise it will pass.
-  [Arguments]  ${left}  ${right}  ${accuracy}=60  ${absolute_delta}=${False}
+  [Arguments]  ${left}  ${right}  ${accuracy}=90  ${absolute_delta}=${False}
   Log  ${left}
   Log  ${right}
   Should Not Be Equal  ${left}  ${None}
   Should Not Be Equal  ${right}  ${None}
   ${status}=  compare_date  ${left}  ${right}  accuracy=${accuracy}  absolute_delta=${absolute_delta}
-  Should Be True  ${status}  msg=Dates are not equal: ${left} != ${right}
+  Should Be True  ${status}  msg=Dates differ: ${left} != ${right}
+
+
+Звірити координати доставки тендера
+  [Arguments]  ${username}  ${tender_uaid}  ${tender_data}  ${item_id}
+  ${item_index}=  get_object_index_by_id  ${tender_data.data['items']}  ${item_id}
+  ${left_lat}=  get_from_object  ${tender_data.data}  items[${item_index}].deliveryLocation.latitude
+  ${left_lon}=  get_from_object  ${tender_data.data}  items[${item_index}].deliveryLocation.longitude
+  ${right_lat}=  Отримати дані із тендера  ${username}  ${tender_uaid}  deliveryLocation.latitude  ${item_id}
+  ${right_lon}=  Отримати дані із тендера  ${username}  ${tender_uaid}  deliveryLocation.longitude  ${item_id}
+  Порівняти координати  ${left_lat}  ${left_lon}  ${right_lat}  ${right_lon}
+
+
+Порівняти координати
+  [Documentation]
+  ...      Compare coordinates with specified ``accuracy`` (in km).
+  ...      Default is `0.1`.
+  ...
+  ...      The keyword will fail if the difference between
+  ...      ``left`` and ``right`` is more than ``accuracy``,
+  ...      otherwise it will pass.
+  [Arguments]  ${left_lat}  ${left_lon}  ${right_lat}  ${right_lon}  ${accuracy}=0.1
+  Should Not Be Equal  ${left_lat}  ${None}
+  Should Not Be Equal  ${left_lon}  ${None}
+  Should Not Be Equal  ${right_lat}  ${None}
+  Should Not Be Equal  ${right_lon}  ${None}
+  ${status}=  compare_coordinates  ${left_lat}  ${left_lon}  ${right_lat}  ${right_lon}  ${accuracy}
+  Should Be True  ${status}  msg=Coordinates differ: (${left_lat}, ${left_lon}) != (${right_lat}, ${right_lon})
 
 
 Звірити поля предметів закупівлі багатопредметного тендера
   [Arguments]  ${username}  ${tender_data}  ${field}
-  @{items}=  Get_From_Object  ${tender_data.data}  items
+  @{items}=  get_from_object  ${tender_data.data}  items
   ${len_of_items}=  Get Length  ${items}
   :FOR  ${index}  IN RANGE  ${len_of_items}
-  \  Log  ${index}
   \  Звірити поле тендера  ${viewer}  ${tender_data}  items[${index}].${field}
 
 
 Звірити дату предметів закупівлі багатопредметного тендера
   [Arguments]  ${username}  ${tender_data}  ${field}  ${accuracy}=60  ${absolute_delta}=${False}
-  @{items}=  Get_From_Object  ${tender_data.data}  items
-  ${len_of_items}=  Get Length  ${items}
-  :FOR  ${index}  IN RANGE  ${len_of_items}
-  \  Log  ${index}
-  \  Звірити дату тендера  ${viewer}  ${tender_data}  items[${index}].${field}  accuracy=${accuracy}  absolute_delta=${absolute_delta}
+  @{items}=  get_from_object  ${tender_data.data}  items
+  :FOR  ${index}  ${_}  IN ENUMERATE  @{items}
+  \  Звірити дату тендера  ${viewer}  ${TENDER['TENDER_UAID']}  ${tender_data}  items[${index}].${field}  accuracy=${accuracy}  absolute_delta=${absolute_delta}
+
+
+Звірити координати доставки предметів закупівлі багатопредметного тендера
+  [Arguments]  ${username}  ${tender_data}
+  @{items}=  get_from_object  ${tender_data.data}  items
+  :FOR  ${index}  ${_}  IN ENUMERATE  @{items}
+  \  Звірити координати тендера  ${viewer}  ${tender_data}  items[${index}]
 
 
 Отримати дані із тендера
-  [Arguments]  ${username}  ${field_name}  ${object_id}=${None}
-  Log  ${username}
-  Log  ${field_name}
-  ${field}=  Run Keyword If  '${object_id}'=='${None}'  Set Variable  ${field_name}
-  ...             ELSE  Отримати шлях до поля об’єкта  ${username}  ${field_name}  ${object_id}
+  [Arguments]  ${username}  ${tender_uaid}  ${field_name}  ${object_id}=${Empty}
+  ${field}=  Run Keyword If  '${object_id}'  Отримати шлях до поля об’єкта  ${username}  ${field_name}  ${object_id}
+  ...             ELSE  Set Variable  ${field_name}
   ${status}  ${field_value}=  Run keyword and ignore error
-  ...      Get from object
+  ...      get_from_object
   ...      ${USERS.users['${username}'].tender_data.data}
   ...      ${field}
   # If field in cache, return its value
   Run Keyword if  '${status}' == 'PASS'  Return from keyword   ${field_value}
   # Else call broker to find field
-  ${field_value}=  Run Keyword IF  '${object_id}'=='${None}'  Run As  ${username}  Отримати інформацію із тендера  ${field}
-  ...                          ELSE  Отримати дані із об’єкта тендера  ${username}  ${object_id}  ${field_name}
+  ${field_value}=  Run Keyword IF  '${object_id}'  Отримати дані із об’єкта тендера  ${username}  ${tender_uaid}  ${object_id}  ${field_name}
+  ...                          ELSE  Run As  ${username}  Отримати інформацію із тендера  ${tender_uaid}  ${field}
   # And caching its value before return
   Set_To_Object  ${USERS.users['${username}'].tender_data.data}  ${field}  ${field_value}
+  ${data}=  munch_dict  arg=${USERS.users['${username}'].tender_data.data}
+  Set To Dictionary  ${USERS.users['${username}'].tender_data}  data=${data}
+  Log  ${USERS.users['${username}'].tender_data.data}
   [return]  ${field_value}
 
 
 Отримати шлях до поля об’єкта
   [Arguments]  ${username}  ${field_name}  ${object_id}
   ${object_type}=  get_object_type_by_id  ${object_id}
-  ${objects}=  Get Variable Value  ${USERS.users['${username}'].tender_data.data['${object_type}']}  ${empty}
+  ${objects}=  Get Variable Value  ${USERS.users['${username}'].tender_data.data['${object_type}']}  ${None}
   ${object_index}=  get_object_index_by_id  ${objects}  ${object_id}
   [return]  ${object_type}[${object_index}].${field_name}
 
 
 Отримати дані із об’єкта тендера
-  [Arguments]  ${username}  ${object_id}  ${field_name}
-  ${object_type}=   get_object_type_by_id  ${object_id}
-  ${status}  ${value}=  Run Keyword If  '${object_type}'=='question'
-  ...                     Run Keyword And Ignore Error  Run As  ${username}  Отримати інформацію із запитання  ${object_id}  ${field_name}
-  ...                   ELSE IF  '${object_type}'=='lots'
-  ...                     Run Keyword And Ignore Error  Run As  ${username}  Отримати інформацію із лоту  ${object_id}  ${field_name}
+  [Arguments]  ${username}  ${tender_uaid}  ${object_id}  ${field_name}
+  ${object_type}=  get_object_type_by_id  ${object_id}
+  ${status}  ${value}=  Run Keyword If  '${object_type}'=='questions'
+  ...      Run Keyword And Ignore Error  Run As  ${username}  Отримати інформацію із запитання  ${tender_uaid}  ${object_id}  ${field_name}
+  ...      ELSE IF  '${object_type}'=='lots'
+  ...      Run Keyword And Ignore Error  Run As  ${username}  Отримати інформацію із лоту  ${tender_uaid}  ${object_id}  ${field_name}
+  ...      ELSE IF  '${object_type}'=='items'
+  ...      Run Keyword And Ignore Error  Run As  ${username}  Отримати інформацію із предмету  ${tender_uaid}  ${object_id}  ${field_name}
+  ...      ELSE IF  '${object_type}'=='features'
+  ...      Run Keyword And Ignore Error  Run As  ${username}  Отримати інформацію із нецінового показника  ${tender_uaid}  ${object_id}  ${field_name}
   ${field}=  Отримати шлях до поля об’єкта  ${username}  ${field_name}  ${object_id}
   ${field_value}=  Run Keyword IF  '${status}'=='PASS'  Set Variable  ${value}
-  ...                          ELSE  Run As  ${username}  Отримати інформацію із тендера  ${field}
+  ...      ELSE  Run As  ${username}  Отримати інформацію із тендера  ${tender_uaid}  ${field}
   [return]  ${field_value}
 
 
@@ -477,18 +565,10 @@ Get Broker Property By Username
   [return]  ${objects_ids}
 
 
-Викликати для учасника
-  [Arguments]  ${username}  ${command}  @{arguments}
-  Run keyword unless  '${WARN_RUN_AS}' == '${True}'
-  ...      Run keywords
-  ...
-  ...      Set Suite Variable  ${WARN_RUN_AS}  ${True}
-  ...
-  ...      AND
-  ...
-  ...      Log  Keyword 'Викликати для учасника' is deprecated. Please use 'Run As' and 'Require Failure' instead.
-  ...      WARN
-  Run Keyword And Return  Run As  ${username}  ${command}  @{arguments}
+Звірити поле скарги із значенням
+  [Arguments]  ${username}  ${tender_uaid}  ${given_value}  ${field_name}  ${complaintID}  ${award_index}=${None}
+  ${received_value}=  Run as  ${username}  Отримати інформацію із скарги  ${tender_uaid}  ${complaintID}  ${field_name}  ${award_index}
+  Порівняти об'єкти  ${given_value}  ${received_value}
 
 
 Run As
@@ -500,12 +580,7 @@ Run As
   Log  ${command}
   Log Many  @{arguments}
   ${keywords_file}=  Get Broker Property By Username  ${username}  keywords_file
-  ${status}  ${value}=  Run keyword and ignore keyword definitions  ${keywords_file}.${command}  ${username}  @{arguments}
-  ${unexpected_args}=  Get Regexp Matches  '${value}'  expected [0-9] arguments, got [0-9]
-  ${status}  ${value}=  Run Keyword If  "${unexpected_args}"=="[]"  Set Variable  ${status}  ${value}
-  ...      ELSE  Run keyword and ignore keyword definitions  ${keywords_file}.${command}  ${username}  @{arguments[:-1]}
-  Run Keyword If  '${status}' == 'FAIL'  Fail  ${value}
-  [return]  ${value}
+  Run Keyword And Return  ${keywords_file}.${command}  ${username}  @{arguments}
 
 
 Require Failure
@@ -517,11 +592,42 @@ Require Failure
   ...      if ``command`` with ``arguments`` fails and vice versa.
   Log  ${username}
   Log  ${command}
-  Log Many  ${command}  @{arguments}
+  Log Many  @{arguments}
   ${keywords_file}=  Get Broker Property By Username  ${username}  keywords_file
   ${status}  ${value}=  Run keyword and ignore keyword definitions  ${keywords_file}.${command}  ${username}  @{arguments}
   Run keyword if  '${status}' == 'PASS'  Fail  Користувач ${username} зміг виконати "${command}"
   [return]  ${value}
+
+
+
+Можливість отримати посилання на аукціон для глядача
+  ${timeout_on_wait}=  Get Broker Property By Username  ${viewer}  timeout_on_wait
+  ${timeout_on_wait}=  Set Variable If
+  ...                  ${timeout_on_wait} < ${120}
+  ...                  ${120}
+  ...                  ${timeout_on_wait}
+  ${url}=  Wait Until Keyword Succeeds
+  ...      ${timeout_on_wait}
+  ...      15 s
+  ...      Run As  ${viewer}  Отримати посилання на аукціон для глядача  ${TENDER['TENDER_UAID']}
+  Should Be True  '${url}'
+  Should Match Regexp  ${url}  ^https?:\/\/auction(?:-sandbox)?\.openprocurement\.org\/tenders\/([0-9A-Fa-f]{32})
+  Log  URL аукціону для глядача: ${url}
+
+
+Можливість отримати посилання на аукціон для учасника ${username}
+  ${timeout_on_wait}=  Get Broker Property By Username  ${username}  timeout_on_wait
+  ${timeout_on_wait}=  Set Variable If
+  ...                  ${timeout_on_wait} < ${120}
+  ...                  ${120}
+  ...                  ${timeout_on_wait}
+  ${url}=  Wait Until Keyword Succeeds
+  ...      ${timeout_on_wait}
+  ...      15 s
+  ...      Run As  ${username}  Отримати посилання на аукціон для учасника  ${TENDER['TENDER_UAID']}
+  Should Be True  '${url}'
+  Should Match Regexp  ${url}  ^https?:\/\/auction(?:-sandbox)?\.openprocurement\.org\/tenders\/([0-9A-Fa-f]{32})
+  Log  URL аукціону для учасника: ${url}
 
 
 Дочекатись дати
@@ -531,8 +637,7 @@ Require Failure
 
 
 Дочекатись дати початку періоду уточнень
-  [Arguments]  ${username}
-  Log  ${username}
+  [Arguments]  ${username}  ${tender_uaid}
   # XXX: HACK: Same as below
   ${status}  ${date}=  Run Keyword And Ignore Error
   ...      Set Variable
@@ -541,26 +646,33 @@ Require Failure
   ...      '${status}' == 'FAIL'
   ...      ${USERS.users['${tender_owner}'].initial_data.data.enquiryPeriod.startDate}
   ...      ${date}
-
   Дочекатись дати  ${date}
   Оновити LAST_MODIFICATION_DATE
   Дочекатись синхронізації з майданчиком  ${username}
+  ${next_status}=  Set variable if  'open' in '${MODE}'  active.tendering  active.enquiries
   Wait until keyword succeeds
   ...      5 min 15 sec
   ...      15 sec
   ...      Звірити статус тендера
   ...      ${username}
-  ...      active.enquiries
+  ...      ${tender_uaid}
+  ...      ${next_status}
 
 
 Звірити статус тендера
-  [Arguments]  ${username}  ${left}
-  ${right}=  Run as  ${username}  Отримати інформацію із тендера  status
+  [Arguments]  ${username}  ${tender_uaid}  ${left}
+  ${right}=  Run as  ${username}  Отримати інформацію із тендера  ${tender_uaid}  status
   Порівняти об'єкти  ${left}  ${right}
 
+
+Звірити статус вимоги/скарги
+  [Arguments]  ${username}  ${tender_uaid}  ${complaintID}  ${left}  ${award_index}=${None}
+  ${right}=  Run as  ${username}  Отримати інформацію із скарги  ${tender_uaid}  ${complaintID}  status  ${award_index}
+  Порівняти об'єкти  ${left}  ${right}
+
+
 Дочекатись дати початку прийому пропозицій
-  [Arguments]  ${username}
-  Log  ${username}
+  [Arguments]  ${username}  ${tender_uaid}
   # This tries to get the date from current user's procurement data cache.
   # On failure, it reads from tender_owner's cached initial_data.
   # XXX: This is a dirty hack!
@@ -578,10 +690,7 @@ Require Failure
   ...      '${status}' == 'FAIL'
   ...      ${USERS.users['${tender_owner}'].initial_data.data.tenderPeriod.startDate}
   ...      ${date}
-
-  ${new_date}=	add_minutes_to_date	${date}	5
-  Дочекатись дати	${new_date}
-
+  Дочекатись дати  ${date}
   Оновити LAST_MODIFICATION_DATE
   Дочекатись синхронізації з майданчиком  ${username}
   Wait until keyword succeeds
@@ -589,12 +698,12 @@ Require Failure
   ...      15 sec
   ...      Звірити статус тендера
   ...      ${username}
+  ...      ${tender_uaid}
   ...      active.tendering
 
 
 Дочекатись дати закінчення прийому пропозицій
-  [Arguments]  ${username}
-  Log  ${username}
+  [Arguments]  ${username}  ${tender_uaid}
   # XXX: HACK: Same as above
   ${status}  ${date}=  Run Keyword And Ignore Error
   ...      Set Variable
@@ -606,50 +715,128 @@ Require Failure
   Дочекатись дати  ${date}
   Оновити LAST_MODIFICATION_DATE
   Дочекатись синхронізації з майданчиком  ${username}
-  ${next_status}=  Set variable if  'open' in '${mode}'  active.pre-qualification  active.auction
+  Wait until keyword succeeds
+  ...      5 min 15 sec
+  ...      15 sec
+  ...      Run Keyword And Expect Error  *
+  ...      Звірити статус тендера
+  ...      ${username}
+  ...      ${tender_uaid}
+  ...      active.tendering
+
+
+Дочекатись дати початку періоду прекваліфікації
+  [Arguments]  ${username}  ${tender_uaid}
+  # XXX: HACK: Same as above
+  ${status}  ${date}=  Run Keyword And Ignore Error
+  ...      Set Variable
+  ...      ${USERS.users['${username}'].tender_data.data.tenderPeriod.endDate}
+  ${date}=  Set Variable If
+  ...      '${status}' == 'FAIL'
+  ...      ${USERS.users['${tender_owner}'].initial_data.data.tenderPeriod.endDate}
+  ...      ${date}
+  Дочекатись дати  ${date}
+  Оновити LAST_MODIFICATION_DATE
+  Дочекатись синхронізації з майданчиком  ${username}
   Wait until keyword succeeds
   ...      5 min 15 sec
   ...      15 sec
   ...      Звірити статус тендера
   ...      ${username}
-  ...      ${next_status}
-  Run keyword if  '${next_status}' == 'active.auction'  Sleep  120  # Auction sync
+  ...      ${tender_uaid}
+  ...      active.pre-qualification
 
 
-Дочекатись дати початку аукціону
-  [Arguments]  ${username}
-  # Can't use that dirty hack here since we don't know
-  # the date of auction when creating the procurement :)
-  ${auctionStart}=  Отримати дані із тендера   ${username}   auctionPeriod.startDate  ${TENDER['LOT_ID']}
-  Дочекатись дати  ${auctionStart}
+Дочекатись дати початку очікування
+  [Arguments]  ${username}  ${tender_uaid}
+  # XXX: HACK: Same as above
+  ${status}  ${date}=  Run Keyword And Ignore Error
+  ...      Set Variable
+  ...      ${USERS.users['${username}'].tender_data.data.tenderPeriod.endDate}
+  ${date}=  Set Variable If
+  ...      '${status}' == 'FAIL'
+  ...      ${USERS.users['${tender_owner}'].initial_data.data.tenderPeriod.endDate}
+  ...      ${date}
+  Дочекатись дати  ${date}
   Оновити LAST_MODIFICATION_DATE
   Дочекатись синхронізації з майданчиком  ${username}
+  Wait until keyword succeeds
+  ...      5 min 15 sec
+  ...      15 sec
+  ...      Звірити статус тендера
+  ...      ${username}
+  ...      ${tender_uaid}
+  ...      active.stage2.pending
 
 
-Відкрити сторінку аукціону для глядача
-  ${url}=  Run as  ${viewer}  Отримати посилання на аукціон для глядача  ${TENDER['TENDER_UAID']}  ${TENDER['LOT_ID']}
-  Open browser  ${url}  ${USERS.users['${viewer}'].browser}
-
-
-Дочекатись дати закінчення аукціону
-  [Arguments]  ${username}
-  Log  ${username}
-  ${auctionEnd}=  Отримати дані із тендера   ${username}   auctionPeriod.endDate  ${TENDER['LOT_ID']}
-  Дочекатись дати  ${auctionEnd}
+Дочекатись дати закінчення періоду прекваліфікації
+  [Arguments]  ${username}  ${tender_uaid}
+  Дочекатись дати  ${USERS.users['${username}'].tender_data.data.qualificationPeriod.endDate}
   Оновити LAST_MODIFICATION_DATE
   Дочекатись синхронізації з майданчиком  ${username}
+  Wait until keyword succeeds
+  ...      5 min 15 sec
+  ...      15 sec
+  ...      Run Keyword And Expect Error  *
+  ...      Звірити статус тендера
+  ...      ${username}
+  ...      ${tender_uaid}
+  ...      active.pre-qualification.stand-still
+
+
+Дочекатися створення нового етапу мостом
+  [Arguments]  ${username}  ${tender_uaid}
+  Оновити LAST_MODIFICATION_DATE
+  Дочекатись синхронізації з майданчиком  ${username}
+  Wait until keyword succeeds
+  ...      10 min 15 sec
+  ...      15 sec
+  ...      Звірити статус тендера
+  ...      ${username}
+  ...      ${tender_uaid}
+  ...      complete
+
+
+Дочекатись дати початку періоду аукціону
+  [Arguments]  ${username}  ${tender_uaid}
+  Оновити LAST_MODIFICATION_DATE
+  Дочекатись синхронізації з майданчиком  ${username}
+  Wait until keyword succeeds
+  ...      10 min 15 sec
+  ...      15 sec
+  ...      Звірити статус тендера
+  ...      ${username}
+  ...      ${tender_uaid}
+  ...      active.auction
+  Sleep  120  # Auction sync
+
+
+Дочекатись дати початку періоду кваліфікації
+  [Arguments]  ${username}  ${tender_uaid}
+  Оновити LAST_MODIFICATION_DATE
+  Дочекатись синхронізації з майданчиком  ${username}
+  Wait until keyword succeeds
+  ...      5 min 15 sec
+  ...      15 sec
+  ...      Звірити статус тендера
+  ...      ${username}
+  ...      ${tender_uaid}
+  ...      active.qualification
 
 
 Дочекатись дати закінчення періоду подання скарг
   [Arguments]  ${username}
-  log  ${username}
   Дочекатись дати  ${USERS.users['${username}'].tender_data.data.complaintPeriod.endDate}
   Оновити LAST_MODIFICATION_DATE
   Дочекатись синхронізації з майданчиком  ${username}
 
 
 Оновити LAST_MODIFICATION_DATE
+  [Documentation]
+  ...      Variable ``${TEST_STATUS}`` is only available in test case teardown.
+  ...      When we call this keyword from elswere, we need to presume that
+  ...      test status is ``PASS`` (since previous keywords passed and this
+  ...      one was called).
   ${LAST_MODIFICATION_DATE}=  Get Current TZdate
-  ${status}=  Get Variable Value  ${TEST_STATUS}
+  ${status}=  Get Variable Value  ${TEST_STATUS}  PASS
   Run Keyword If  '${status}' == 'PASS'  Set To Dictionary  ${TENDER}  LAST_MODIFICATION_DATE=${LAST_MODIFICATION_DATE}
-  ...         ELSE IF  '${status}' == '${Empty}'  Set To Dictionary  ${TENDER}  LAST_MODIFICATION_DATE=${LAST_MODIFICATION_DATE}

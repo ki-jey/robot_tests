@@ -1,14 +1,27 @@
 # -*- coding: utf-8 -
-from datetime import timedelta
-from faker import Factory
-from munch import munchify
-from tempfile import NamedTemporaryFile
-from .local_time import get_now
+import os
 import random
+from datetime import timedelta
+from tempfile import NamedTemporaryFile
+from uuid import uuid4
+from faker import Factory
+from faker.providers.company.en_US import Provider as CompanyProviderEnUs
+from faker.providers.company.ru_RU import Provider as CompanyProviderRuRu
+from munch import munchify
+from op_faker import OP_Provider
+from .local_time import get_now, TZ
 
-fake = Factory.create('uk_UA')
-fake_ru = Factory.create('ru')
-fake_en = Factory.create()
+
+fake_en = Factory.create(locale='en_US')
+fake_ru = Factory.create(locale='ru_RU')
+fake_uk = Factory.create(locale='uk_UA')
+fake_uk.add_provider(OP_Provider)
+fake = fake_uk
+
+# This workaround fixes an error caused by missing "catch_phrase" class method
+# for the "ru_RU" locale in Faker >= 0.7.4
+fake_ru.add_provider(CompanyProviderEnUs)
+fake_ru.add_provider(CompanyProviderRuRu)
 
 
 def create_fake_sentence():
@@ -16,52 +29,50 @@ def create_fake_sentence():
 
 
 def field_with_id(prefix, sentence):
-    return "{}-{}: {}".format(prefix, fake.uuid4()[:8], sentence)
+    return u"{}-{}: {}".format(prefix, fake.uuid4()[:8], sentence)
+
+
+def translate_country_en(country):
+    if country == u"Україна":
+        return "Ukraine"
+    else:
+        raise Exception(u"Cannot translate country to english: {}".format(country))
+
+
+def translate_country_ru(country):
+    if country == u"Україна":
+        return u"Украина"
+    else:
+        raise Exception(u"Cannot translate country to russian: {}".format(country))
 
 
 def create_fake_doc():
     content = fake.text()
     suffix = fake.random_element(('.doc', '.docx', '.pdf'))
-    tf = NamedTemporaryFile(delete=False, suffix=suffix)
+    prefix = "{}-{}{}".format("d", fake.uuid4()[:8], fake_en.word())
+    tf = NamedTemporaryFile(delete=False, suffix=suffix, prefix=prefix)
     tf.write(content)
     tf.close()
-    return tf.name.replace("\\", "\\\\")
+    return tf.name.replace('\\', '\\\\'), os.path.basename(tf.name), content
 
 
-def test_tender_data(intervals, periods=("enquiry", "tender")):
+def test_tender_data(params,
+                     periods=("enquiry", "tender"),
+                     submissionMethodDetails=None):
+    submissionMethodDetails = submissionMethodDetails \
+        if submissionMethodDetails else "quick"
     now = get_now()
-    value_amount = 50000.99
-    t_data = {
-        "title": u"[ТЕСТУВАННЯ] " + fake.catch_phrase(),
+    value_amount = round(random.uniform(3000, 99999999999.99), 2)  # max value equals to budget of Ukraine in hryvnias
+    data = {
         "mode": "test",
-        "submissionMethodDetails": "quick",
-        "description": u"Тестовий тендер",
-        "description_ru": u"Тестовый тендер",
-        "description_en": "Test tender",
-        "procuringEntity": {
-            "name": fake.company(),
-            "name_ru": fake_ru.company(),
-            "name_en": fake_en.company(),
-            "identifier": {
-                "scheme": u"UA-EDR",
-                "id": u"{:08d}".format(fake.pyint()),
-                "uri": fake.image_url(width=None, height=None)
-            },
-            "address": {
-                "countryName": u"Україна",
-                "countryName_ru": u"Украина",
-                "countryName_en": "Ukraine",
-                "postalCode": fake.postalcode(),
-                "region": u"м. Київ",
-                "locality": u"м. Київ",
-                "streetAddress": fake.street_address()
-            },
-            "contactPoint": {
-                "name": fake.name(),
-                "telephone": fake.phone_number()
-            },
-            "kind": "other"
-        },
+        "submissionMethodDetails": submissionMethodDetails,
+        "description": fake.description(),
+        "description_en": fake_en.sentence(nb_words=10, variable_nb_words=True),
+        "description_ru": fake_ru.sentence(nb_words=10, variable_nb_words=True),
+        "title": fake.title(),
+        "title_en": fake_en.catch_phrase(),
+        "title_ru": fake_ru.catch_phrase(),
+        "procuringEntity": fake.procuringEntity(),
         "value": {
             "amount": value_amount,
             "currency": u"UAH",
@@ -71,102 +82,78 @@ def test_tender_data(intervals, periods=("enquiry", "tender")):
             "amount": round(random.uniform(0.005, 0.03) * value_amount, 2),
             "currency": u"UAH"
         },
-        "items": []
+        "items": [],
+        "features": []
     }
-    new_item = test_item_data()
-    t_data['items'].append(new_item)
+    accelerator = params['intervals']['accelerator']
+    data['procurementMethodDetails'] = 'quick, ' \
+        'accelerator={}'.format(accelerator)
+    data["procuringEntity"]["kind"] = "other"
+    if data.get("mode") == "test":
+        data["title"] = u"[ТЕСТУВАННЯ] {}".format(data["title"])
+        data["title_en"] = u"[TESTING] {}".format(data["title_en"])
+        data["title_ru"] = u"[ТЕСТИРОВАНИЕ] {}".format(data["title_ru"])
     period_dict = {}
     inc_dt = now
     for period_name in periods:
         period_dict[period_name + "Period"] = {}
         for i, j in zip(range(2), ("start", "end")):
-            inc_dt += timedelta(minutes=intervals[period_name][i])
-            period_dict[period_name + "Period"][j + "Date"] = inc_dt.isoformat()
-    t_data.update(period_dict)
-    return t_data
+            inc_dt += timedelta(minutes=params['intervals'][period_name][i])
+            period_dict[period_name + "Period"][j + "Date"] = inc_dt.astimezone(TZ).isoformat()
+    data.update(period_dict)
+    cpv_group = fake.cpv()[:4]
+    if params.get('number_of_lots'):
+        data['lots'] = []
+        for lot_number in range(params['number_of_lots']):
+            lot_id = uuid4().hex
+            new_lot = test_lot_data(data['value']['amount'])
+            data['lots'].append(new_lot)
+            data['lots'][lot_number]['id'] = lot_id
+            for i in range(params['number_of_items']):
+                new_item = test_item_data(cpv_group)
+                new_item['relatedLot'] = lot_id
+                data['items'].append(new_item)
+        value_amount = round(sum(lot['value']['amount'] for lot in data['lots']), 2)
+        minimalStep = min(lot['minimalStep']['amount'] for lot in data['lots'])
+        data['value']['amount'] = value_amount
+        data['minimalStep']['amount'] = minimalStep
+        if params.get('lot_meat'):
+            new_feature = test_feature_data()
+            new_feature['featureOf'] = "lot"
+            data['lots'][0]['id'] = data['lots'][0].get('id', uuid4().hex)
+            new_feature['relatedItem'] = data['lots'][0]['id']
+            data['features'].append(new_feature)
+    else:
+        for i in range(params['number_of_items']):
+            new_item = test_item_data(cpv_group)
+            data['items'].append(new_item)
+    if params.get('tender_meat'):
+        new_feature = test_feature_data()
+        new_feature.featureOf = "tenderer"
+        data['features'].append(new_feature)
+    if params.get('item_meat'):
+        new_feature = test_feature_data()
+        new_feature['featureOf'] = "item"
+        data['items'][0]['id'] = data['items'][0].get('id', uuid4().hex)
+        new_feature['relatedItem'] = data['items'][0]['id']
+        data['features'].append(new_feature)
+    if not data['features']:
+        del data['features']
+    data['status'] = 'draft'
+    return munchify(data)
 
 
-def test_tender_data_limited(intervals, procurement_method_type):
-    now = get_now()
-    data = {
-        "items":
-        [
-            {
-                "additionalClassifications":
-                [
-                    {
-                        "description": u"Послуги щодо забезпечення харчуванням, інші",
-                        "id": "56.29",
-                        "scheme": u"ДКПП"
-                    }
-                ],
-                "classification":
-                {
-                    "description": u"Послуги з організації шкільного харчування",
-                    "id": "55523100-3",
-                    "scheme": "CPV"
-                },
-                "description": field_with_id('i', fake.sentence(nb_words=10, variable_nb_words=True)),
-                "id": "2dc54675d6364e2baffbc0f8e74432ac",
-                "deliveryDate": {
-                    "endDate": (now + timedelta(days=5)).isoformat()
-                },
-                "deliveryLocation": {
-                    "latitude": 49.8500,
-                    "longitude": 24.0167
-                },
-                "deliveryAddress": {
-                    "countryName": u"Україна",
-                    "countryName_ru": u"Украина",
-                    "countryName_en": "Ukraine",
-                    "postalCode": fake.postalcode(),
-                    "region": u"м. Київ",
-                    "locality": u"м. Київ",
-                    "streetAddress": fake.street_address()
-                }
-            }
-        ],
-        "mode": "test",
-        "procurementMethod": "limited",
-        "procurementMethodType": procurement_method_type,
-        "procuringEntity":
-        {
-            "address":
-            {
-                "countryName": u"Україна",
-                "locality": u"м. Вінниця",
-                "postalCode": "21027",
-                "region": u"м. Вінниця",
-                "streetAddress": u"вул. Стахурського. 22"
-            },
-            "contactPoint":
-            {
-                "name": u"Куца Світлана Валентинівна",
-                "telephone": "+380 (432) 46-53-02",
-                "url": "http://sch10.edu.vn.ua/"
-            },
-            "identifier":
-            {
-                "id": "21725150",
-                "legalName": u"Заклад \"Загальноосвітня школа І-ІІІ ступенів № 10 Вінницької міської ради\"",
-                "scheme": u"UA-EDR"
-            },
-            "name": u"ЗОСШ #10 м.Вінниці",
-            "kind": "general"
-        },
-        "value": {
-            "amount": 500000,
-            "currency": "UAH",
-            "valueAddedTaxIncluded": True
-        },
-        "description": fake.sentence(nb_words=10, variable_nb_words=True),
-        "description_en": fake.sentence(nb_words=10, variable_nb_words=True),
-        "description_ru": fake.sentence(nb_words=10, variable_nb_words=True),
-        "title": fake.catch_phrase(),
-        "title_en": fake.catch_phrase(),
-        "title_ru": fake.catch_phrase()
-    }
-    if procurement_method_type == "negotiation":
+def test_tender_data_limited(params):
+    data = test_tender_data(params)
+    del data["submissionMethodDetails"]
+    del data["minimalStep"]
+    del data["enquiryPeriod"]
+    del data["tenderPeriod"]
+    for lot in data.get('lots', []):
+        lot.pop('minimalStep', None)
+    data["procuringEntity"]["kind"] = "general"
+    data.update({"procurementMethodType": params['mode'], "procurementMethod": "limited"})
+    if params['mode'] == "negotiation":
         cause_variants = (
             "artContestIP",
             "noCompetition",
@@ -176,120 +163,54 @@ def test_tender_data_limited(intervals, procurement_method_type):
             "stateLegalServices"
         )
         cause = fake.random_element(cause_variants)
-        data.update({"cause": cause})
-    if procurement_method_type == "negotiation.quick":
+    elif params['mode'] == "negotiation.quick":
         cause_variants = ('quick',)
+    if params['mode'] in ("negotiation", "negotiation.quick"):
         cause = fake.random_element(cause_variants)
-        data.update({"cause": cause})
-    if procurement_method_type == "negotiation" \
-            or procurement_method_type == "negotiation.quick":
         data.update({
-            "procurementMethodDetails": "quick, accelerator=1440",
-            "causeDescription": fake.sentence(nb_words=10, variable_nb_words=True)
+            "cause": cause,
+            "causeDescription": fake.description()
         })
-    return data
+    return munchify(data)
 
 
-def test_tender_data_multiple_items(intervals):
-    t_data = test_tender_data(intervals)
-    for _ in range(4):
-        new_item = test_item_data()
-        t_data['items'].append(new_item)
-    return t_data
-
-
-def test_tender_data_multiple_lots(intervals):
-    tender = test_tender_data(intervals)
-    first_lot_id = "3c8f387879de4c38957402dbdb8b31af"
-    tender['items'][0]['relatedLot'] = first_lot_id
-    tender['lots'] = [test_lot_data()]
-    tender['lots'][0]['id'] = first_lot_id
-    return tender
-
-
-def test_tender_data_meat(intervals):
-    tender = munchify(test_tender_data(intervals))
-    item_id = "edd0032574bf4402877ad5f362df225a"
-    tender['items'][0].id = item_id
-    tender.features = [
-        {
-            "code": "ee3e24bc17234a41bd3e3a04cc28e9c6",
-            "featureOf": "tenderer",
-            "title":  field_with_id('f', "Термін оплати"),
-            "description": "Умови відстрочки платежу після поставки товару",
-            "enum": [
-                {
-                    "value": 0.15,
-                    "title": "180 днів та більше"
-                },
-                {
-                    "value": 0.1,
-                    "title": "90-179 днів",
-                },
-                {
-                    "value": 0.05,
-                    "title": "30-89 днів"
-                },
-                {
-                    "value": 0,
-                    "title": "Менше 30 днів"
-                }
-            ]
-        },
-        {
-            "code": "48cfd91612c04125ab406374d7cc8d93",
-            "featureOf": "item",
-            "relatedItem": item_id,
-            "title":  field_with_id('f', "Сорт"),
-            "description": "Сорт продукції",
-            "enum": [
-                {
-                    "value": 0.05,
-                    "title": "Вищий"
-                },
-                {
-                    "value": 0.01,
-                    "title": "Перший",
-                },
-                {
-                    "value": 0,
-                    "title": "Другий"
-                }
-            ]
-        }
-    ]
-    return tender
+def test_feature_data():
+    return munchify({
+        "code": uuid4().hex,
+        "title": field_with_id("f", fake.title()),
+        "title_en": field_with_id('f', fake_en.sentence(nb_words=5, variable_nb_words=True)),
+        "title_ru": field_with_id('f', fake_ru.sentence(nb_words=5, variable_nb_words=True)),
+        "description": fake.description(),
+        "enum": [
+            {
+                "value": 0.05,
+                "title": fake.word()
+            },
+            {
+                "value": 0.01,
+                "title": fake.word()
+            },
+            {
+                "value": 0,
+                "title": fake.word()
+            }
+        ]
+    })
 
 
 def test_question_data():
-    data = munchify({
+    return munchify({
         "data": {
-            "author": {
-                "address": {
-                    "countryName": u"Україна",
-                    "countryName_ru": u"Украина",
-                    "countryName_en": "Ukraine",
-                    "locality": u"м. Вінниця",
-                    "postalCode": "21100",
-                    "region": u"Вінницька область",
-                    "streetAddress": fake.street_address()
-                },
-                "contactPoint": {
-                    "name": fake.name(),
-                    "telephone": fake.phone_number()
-                },
-                "identifier": {
-                    "scheme": u"UA-EDR",
-                    "id": u"{:08d}".format(fake.pyint()),
-                    "uri": fake.image_url(width=None, height=None)
-                },
-                "name": fake.company()
-            },
-            "description": fake.sentence(nb_words=10, variable_nb_words=True),
-            "title": field_with_id('q', fake.sentence(nb_words=6, variable_nb_words=True))
+            "author": fake.procuringEntity(),
+            "description": fake.description(),
+            "title": field_with_id("q", fake.title())
         }
     })
-    return data
+
+
+def test_related_question(question, relation, obj_id):
+    question.data.update({"questionOf": relation, "relatedItem": obj_id})
+    return munchify(question)
 
 
 def test_question_answer_data():
@@ -300,107 +221,27 @@ def test_question_answer_data():
     })
 
 
-def test_complaint_data(lot=False):
+def test_complaint_data():
     data = munchify({
         "data": {
-            "author": {
-                "address": {
-                    "countryName": u"Україна",
-                    "countryName_ru": u"Украина",
-                    "countryName_en": "Ukraine",
-                    "locality": u"м. Вінниця",
-                    "postalCode": "21100",
-                    "region": u"Вінницька область",
-                    "streetAddress": fake.street_address()
-                },
-                "contactPoint": {
-                    "name": fake.name(),
-                    "telephone": fake.phone_number()
-                },
-                "identifier": {
-                    "scheme": u"UA-EDR",
-                    "id": u"{:08d}".format(fake.pyint()),
-                    "uri": fake.image_url(width=None, height=None)
-                },
-                "name": fake.company()
-            },
-            "description": fake.sentence(nb_words=10, variable_nb_words=True),
-            "title": fake.sentence(nb_words=6, variable_nb_words=True)
+            "author": fake.procuringEntity(),
+            "description": fake.description(),
+            "title": fake.title()
         }
     })
-    if lot:
-        data = test_lot_complaint_data(data)
     return data
 
 
 test_claim_data = test_complaint_data
 
 
-def test_complaint_answer_data(complaint_id):
-    return munchify({
-        "data": {
-            "id": complaint_id,
-            "status": "answered",
-            "resolutionType": "resolved",
-            "resolution": fake.sentence(nb_words=40, variable_nb_words=True)
-        }
-    })
-
-
-def test_claim_answer_satisfying_data(claim_id):
-    return munchify({
-        "data": {
-            "id": claim_id,
-            "status": "resolved",
-            "satisfied": True
-        }
-    })
-
-
-def test_claim_answer_data(claim_id):
+def test_claim_answer_data():
     return munchify({
         "data": {
             "status": "answered",
             "resolutionType": "resolved",
             "tendererAction": fake.sentence(nb_words=10, variable_nb_words=True),
-            "resolution": fake.sentence(nb_words=15, variable_nb_words=True),
-            "id": claim_id
-        }
-    })
-
-
-def test_escalate_claim_data(claim_id):
-    return munchify({
-        "data": {
-            "status": "pending",
-            "satisfied": False,
-            "id": claim_id
-        }
-    })
-
-
-def test_cancel_tender_data(cancellation_reason):
-    return munchify({
-        'data': {
-            'reason': cancellation_reason
-        }
-    })
-
-
-def test_cancel_claim_data(claim_id, cancellation_reason):
-    return munchify({
-        'data': {
-            'cancellationReason': cancellation_reason,
-            'status': 'cancelled',
-            'id': claim_id
-        }
-    })
-
-
-def test_change_cancellation_document_field_data(key, value):
-    return munchify({
-        "data": {
-            key: value
+            "resolution": fake.sentence(nb_words=15, variable_nb_words=True)
         }
     })
 
@@ -431,152 +272,59 @@ def test_complaint_reply_data():
     })
 
 
-def test_bid_data(mode):
+def test_bid_data():
     bid = munchify({
         "data": {
             "tenderers": [
-                {
-                    "address": {
-                        "countryName": u"Україна",
-                        "countryName_ru": u"Украина",
-                        "countryName_en": "Ukraine",
-                        "locality": u"м. Вінниця",
-                        "postalCode": "21100",
-                        "region": u"Вінницька область",
-                        "streetAddress": fake.street_address()
-                    },
-                    "contactPoint": {
-                        "name": fake.name(),
-                        "telephone": fake.phone_number()
-                    },
-                    "identifier": {
-                        "scheme": u"UA-EDR",
-                        "id": u"{:08d}".format(fake.pyint()),
-                    },
-                    "name": fake.company()
-                }
+                fake.procuringEntity()
             ]
         }
     })
-    if 'open' in mode:
-        bid.data['selfEligible'] = True
-        bid.data['selfQualified'] = True
-    if mode == 'multiLot':
-        bid.data.lotValues = list()
-        for _ in range(2):
-            bid.data.lotValues.append(test_bid_value())
-    else:
-        bid.data.update(test_bid_value())
-    if mode == 'meat':
-        bid.data.update(test_bid_params())
+    bid.data.tenderers[0].address.countryName_en = translate_country_en(bid.data.tenderers[0].address.countryName)
+    bid.data.tenderers[0].address.countryName_ru = translate_country_ru(bid.data.tenderers[0].address.countryName)
+    bid.data['status'] = 'draft'
     return bid
 
 
-def test_bid_params():
+def test_bid_value(max_value_amount):
     return munchify({
-        "parameters": [
-            {
-                "code": "ee3e24bc17234a41bd3e3a04cc28e9c6",
-                "value": fake.random_element(elements=(0.15, 0.1, 0.05, 0))
-            },
-            {
-                "code": "48cfd91612c04125ab406374d7cc8d93",
-                "value": fake.random_element(elements=(0.05, 0.01, 0))
-            }
-        ]
+        "value": {
+            "currency": "UAH",
+            "amount": round(random.uniform(1, max_value_amount), 2),
+            "valueAddedTaxIncluded": True
+        }
     })
-
-def test_bid_value():
-    return munchify({
-                "value": {
-                    "currency": "UAH",
-                    "amount": fake.random_int(max=1999),
-                    "valueAddedTaxIncluded": True
-                }
-            })
 
 
 def test_supplier_data():
     return munchify({
         "data": {
             "suppliers": [
-                {
-                    "address": {
-                        "countryName": u"Україна",
-                        "locality": u"м. Вінниця",
-                        "postalCode": "21100",
-                        "region": u"м. Вінниця",
-                        "streetAddress": u"вул. Островського, 33"
-                    },
-                    "contactPoint": {
-                        "email": "soleksuk@gmail.com",
-                        "name": u"Сергій Олексюк",
-                        "telephone": "+380 (432) 21-69-30"
-                    },
-                    "identifier": {
-                        "id": "13313462",
-                        "legalName": u"Державне комунальне підприємство громадського харчування «Школяр»",
-                        "scheme": "UA-EDR",
-                        "uri": "http://sch10.edu.vn.ua/"
-                    },
-                    "name": u"ДКП «Школяр»"
-                }
+                fake.procuringEntity()
             ],
             "value": {
-                "amount": 475000,
+                "amount": fake.random_int(min=1),
                 "currency": "UAH",
                 "valueAddedTaxIncluded": True
-            }
+            },
+            "qualified": True
         }
     })
 
 
-def test_award_data():
-    return munchify({'data': {}})
-
-
-def test_item_data():
-    now = get_now()
-    return munchify({
-        "description": field_with_id('i', fake.catch_phrase()),
-        "deliveryDate": {
-            "endDate": (now + timedelta(days=5)).isoformat()
-        },
-        "deliveryLocation": {
-            "latitude": 49.8500,
-            "longitude": 24.0167
-        },
-        "deliveryAddress": {
-            "countryName": u"Україна",
-            "countryName_ru": u"Украина",
-            "countryName_en": "Ukraine",
-            "postalCode": fake.postalcode(),
-            "region": u"м. Київ",
-            "locality": u"м. Київ",
-            "streetAddress": fake.street_address()
-        },
-        "classification": {
-            "scheme": u"CPV",
-            "id": u"44617100-9",
-            "description": u"Картонні коробки",
-            "description_ru": u"Большие картонные коробки",
-            "description_en": u"Cartons"
-        },
-        "additionalClassifications": [
-            {
-                "scheme": u"ДКПП",
-                "id": u"17.21.1",
-                "description": u"Папір і картон гофровані, паперова й картонна тара"
-            }
-        ],
-        "unit": {
-            "name": u"кілограми",
-            "name_ru": u"килограммы",
-            "name_en": "kilogram",
-            "code": u"KGM"
-        },
-        "quantity": fake.pyint()
-    })
+def test_item_data(cpv=None):
+    data = fake.fake_item(cpv)
+    data["description"] = field_with_id("i", data["description"])
+    data["description_en"] = field_with_id("i", data["description_en"])
+    data["description_ru"] = field_with_id("i", data["description_ru"])
+    days = fake.random_int(min=1, max=30)
+    data["deliveryDate"] = {
+        "startDate": (get_now() + timedelta(days=days)).astimezone(TZ).isoformat(),
+        "endDate": (get_now() + timedelta(days=days)).astimezone(TZ).isoformat()
+    }
+    data["deliveryAddress"]["countryName_en"] = translate_country_en(data["deliveryAddress"]["countryName"])
+    data["deliveryAddress"]["countryName_ru"] = translate_country_ru(data["deliveryAddress"]["countryName"])
+    return munchify(data)
 
 
 def test_invalid_features_data():
@@ -584,52 +332,38 @@ def test_invalid_features_data():
         {
             "code": "ee3e24bc17234a41bd3e3a04cc28e9c6",
             "featureOf": "tenderer",
-            "title": "Термін оплати",
-            "description": "Умови відстрочки платежу після поставки товару",
+            "title": fake.title(),
+            "description": fake.description(),
             "enum": [
                 {
                     "value": 0.35,
-                    "title": "180 днів та більше"
+                    "title": fake.word()
                 },
                 {
                     "value": 0,
-                    "title": "Менше 30 днів"
-                }
-            ]
-        },
-        {
-            "code": "48cfd91612c04125ab406374d7cc8d93",
-            "featureOf": "item",
-            "relatedItem": "edd0032574bf4402877ad5f362df225a",
-            "title": "Сорт",
-            "description": "Сорт продукції",
-            "enum": [
-                {
-                    "value": 0.35,
-                    "title": "Вищий"
-                },
-                {
-                    "value": 0,
-                    "title": "Другий"
+                    "title": fake.word()
                 }
             ]
         }
     ]
 
 
-def test_lot_data():
+def test_lot_data(max_value_amount):
+    value_amount = round(random.uniform(1, max_value_amount), 2)
     return munchify(
         {
-            "description": fake.sentence(nb_words=10, variable_nb_words=True),
-            "title": field_with_id('l', fake.sentence(nb_words=6, variable_nb_words=True)),
+            "description": fake.description(),
+            "title": field_with_id('l', fake.title()),
+            "title_en": field_with_id('l', fake_en.sentence(nb_words=5, variable_nb_words=True)),
+            "title_ru": field_with_id('l', fake_ru.sentence(nb_words=5, variable_nb_words=True)),
             "value": {
                 "currency": "UAH",
-                "amount": 2000 + fake.pyfloat(left_digits=4, right_digits=1, positive=True),
+                "amount": value_amount,
                 "valueAddedTaxIncluded": True
             },
             "minimalStep": {
                 "currency": "UAH",
-                "amount": 30.0,
+                "amount": round(random.uniform(0.005, 0.03) * value_amount, 2),
                 "valueAddedTaxIncluded": True
             },
             "status": "active"
@@ -641,49 +375,48 @@ def test_lot_document_data(document, lot_id):
     return munchify(document)
 
 
-def test_lot_question_data(question, lot_id):
-    question.data.update({"questionOf": "lot", "relatedItem": lot_id})
-    return munchify(question)
-
-
-def test_lot_complaint_data(complaint, lot_id):
-    complaint.data.update({"complaintOf": "lot", "relatedItem": lot_id})
-    return munchify(complaint)
-
-
-def test_tender_data_openua(intervals):
-    accelerator = intervals['accelerator']
-    # Since `accelerator` field is not really a list containing timings
-    # for a period called `acceleratorPeriod`, let's remove it :)
-    del intervals['accelerator']
+def test_tender_data_openua(params, submissionMethodDetails):
     # We should not provide any values for `enquiryPeriod` when creating
     # an openUA or openEU procedure. That field should not be present at all.
     # Therefore, we pass a nondefault list of periods to `test_tender_data()`.
-    t_data = test_tender_data(intervals, periods=('tender',))
-    t_data['procurementMethodType'] = 'aboveThresholdUA'
-    t_data['procurementMethodDetails'] = 'quick, ' \
-        'accelerator={}'.format(accelerator)
-    t_data['procuringEntity']['kind'] = 'general'
-    return t_data
+    data = test_tender_data(params, ('tender',), submissionMethodDetails)
+    data['procurementMethodType'] = 'aboveThresholdUA'
+    data['procuringEntity']['kind'] = 'general'
+    return data
 
 
-def test_tender_data_openeu(intervals):
-    accelerator = intervals['accelerator']
-    # Since `accelerator` field is not really a list containing timings
-    # for a period called `acceleratorPeriod`, let's remove it :)
-    del intervals['accelerator']
+def test_tender_data_openeu(params, submissionMethodDetails):
     # We should not provide any values for `enquiryPeriod` when creating
     # an openUA or openEU procedure. That field should not be present at all.
     # Therefore, we pass a nondefault list of periods to `test_tender_data()`.
-    t_data = test_tender_data(intervals, periods=('tender',))
-    t_data['procurementMethodType'] = 'aboveThresholdEU'
-    t_data['procurementMethodDetails'] = 'quick, ' \
-        'accelerator={}'.format(accelerator)
-    t_data['title_en'] = "[TESTING]"
-    for item_number, item in enumerate(t_data['items']):
+    data = test_tender_data(params, ('tender',), submissionMethodDetails)
+    data['procurementMethodType'] = 'aboveThresholdEU'
+    data['title_en'] = "[TESTING]"
+    for item_number, item in enumerate(data['items']):
         item['description_en'] = "Test item #{}".format(item_number)
-    t_data['procuringEntity']['contactPoint']['name_en'] = fake_en.name()
-    t_data['procuringEntity']['contactPoint']['availableLanguage'] = "en"
-    t_data['procuringEntity']['identifier']['legalName_en'] = "Institution \"Vinnytsia City Council primary and secondary general school № 10\""
-    t_data['procuringEntity']['kind'] = 'general'
-    return t_data
+    data['procuringEntity']['name_en'] = fake_en.name()
+    data['procuringEntity']['contactPoint']['name_en'] = fake_en.name()
+    data['procuringEntity']['contactPoint']['availableLanguage'] = "en"
+    data['procuringEntity']['identifier']['legalName_en'] = u"Institution \"Vinnytsia City Council primary and secondary general school № 10\""
+    data['procuringEntity']['kind'] = 'general'
+    return data
+
+
+def test_tender_data_competitive_dialogue(params, submissionMethodDetails):
+    # We should not provide any values for `enquiryPeriod` when creating
+    # an openUA or openEU procedure. That field should not be present at all.
+    # Therefore, we pass a nondefault list of periods to `test_tender_data()`.
+    data = test_tender_data(params, ('tender',), submissionMethodDetails)
+    if params.get('dialogue_type') == 'UA':
+        data['procurementMethodType'] = 'competitiveDialogueUA'
+    else:
+        data['procurementMethodType'] = 'competitiveDialogueEU'
+        data['procuringEntity']['contactPoint']['availableLanguage'] = "en"
+    data['title_en'] = "[TESTING] {}".format(fake_en.sentence(nb_words=3, variable_nb_words=True))
+    for item in data['items']:
+        item['description_en'] = fake_en.sentence(nb_words=3, variable_nb_words=True)
+    data['procuringEntity']['name_en'] = fake_en.name()
+    data['procuringEntity']['contactPoint']['name_en'] = fake_en.name()
+    data['procuringEntity']['identifier']['legalName_en'] = fake_en.sentence(nb_words=10, variable_nb_words=True)
+    data['procuringEntity']['kind'] = 'general'
+    return data
